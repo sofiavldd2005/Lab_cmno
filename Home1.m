@@ -18,7 +18,7 @@ beta_dot_max  = 10;          % Max pendulum velocity (rad/s)
 int_alpha_max = 2;           % Max accumulated integral error 
 v_max         = 5;           % Max motor voltage (V)
 
-Time = 2;                    % General simulation time
+Time = 10;                    % General simulation time
 
 
 %% ========================================================================
@@ -132,7 +132,7 @@ assignin('base','D_c',D_c);
 
 disp('--- Running Final Simulink Simulation ---');
 % Simulates using the K and L matrices currently in the workspace
-out_final = sim('my_macro_2_2025b.slx', Time);
+out_final = sim('my_macro_2_2025.slx', Time);
 
 y_final = out_final.y;
 t_final = out_final.tout;
@@ -164,3 +164,123 @@ title(sprintf('Bryson LQR & Tuned LQE Response (Settling Time: %.2fs)', settling
 xlabel('Time (s)', 'FontWeight', 'bold');
 ylabel('Outputs (rad)', 'FontWeight', 'bold');
 legend('\alpha', '\beta', 'Location', 'best');
+ %% Bryson's method & Augmented LQG Controller
+
+        % 1. Maximum acceptable limits (Constraints)
+        alpha_max     = 90 * pi/180; 
+        beta_max      = 15 * pi/180; 
+        alpha_dot_max = 10;          
+        beta_dot_max  = 10;          
+        current_max   = 5;           
+        int_alpha_max = 0.05;
+        v_max         = 5;           
+
+        % 2. Calculate Q matrix weights 
+        Q11 = 1 / (alpha_max^2);
+        Q22 = 1 / (alpha_dot_max^2);
+        Q33 = 1 / (beta_max^2);
+        Q44 = 1 / (beta_dot_max^2);
+        Q55 = 1 / (current_max^2);
+        Q66 = 1 / (int_alpha_max^2);
+        
+        Qr = diag([Q11, Q22, Q33, Q44, Q55, Q66]);
+        Rr = 1 / (v_max^2);
+
+        % 3. Create the Augmented PLANT Matrices for LQR (Named Aa, Ba)
+        C_alpha = [1, 0, 0, 0, 0]; 
+        Aa = [A, zeros(5,1); 
+              C_alpha, 0];
+        Ba = [B; 
+              0];
+
+        % 4. Calculate the Augmented Feedback Gain K_aug
+        K_aug = lqr(Aa, Ba, Qr, Rr);
+        
+        
+        disp('--- Bryson Method ---');
+        disp('Augmented Gain K_aug:');
+        disp(K_aug);
+
+        % Extract the primary gains (K) and the integral gain (K_i)
+        K   = K_aug(1:5);
+        K_i = K_aug(6);
+
+        % ==========================================================
+        % OBSERVER (KALMAN FILTER) TUNING
+        % ==========================================================
+        % The observer only estimates the 5 physical states
+        G = eye(size(A)); 
+
+        % Tuning Scalars
+        q_noise = 10;   
+        r_noise = 1;    
+
+        Qe = eye(size(A)) * q_noise; 
+        Re = eye(2) * r_noise;       
+
+        % Calculate estimator gains
+        L = lqe(A, G, C, Qe, Re); 
+
+        % ==========================================================
+        % LQG CONTROLLER + INTEGRATOR MATRICES FOR SIMULINK
+        % ==========================================================
+        % We mathematically embed the integrator into the Simulink block!
+        
+        % The new controller has 6 internal states: 5 from observer, 1 from integrator
+        A_c = [A - B*K - L*C,  -B*K_i; 
+               0, 0, 0, 0, 0,       0];
+        
+        % The block takes 'y' as input. y(1) is alpha. 
+        % The integrator integrates 1*alpha + 0*beta
+        B_c = [L; 
+               1, 0]; 
+               
+        % Output the final control signal u = -Kx - K_i*int
+        C_c = -K_aug; 
+        
+        D_c = [0, 0];
+
+        % Send variables to workspace for Simulink to use
+        assignin('base','A_c',A_c);
+        assignin('base','B_c',B_c);
+        assignin('base','C_c',C_c);
+        assignin('base','D_c',D_c);
+        
+
+        % ==========================================================
+        % SIMULATION & PLOTTING
+        % ==========================================================
+        
+        % Run the Simulink model 
+        out_bryson = sim('my_macro_2_2025.slx', Time);
+
+        % Extract data
+        y_bryson = out_bryson.y;
+        t_bryson = out_bryson.tout;
+
+        % Calculate settling time 
+        settlingTime_bryson = Time;  
+        state_alpha_beta_bryson = y_bryson(:, 1:2); 
+        for k = 1:length(t_bryson)
+            if all(all(abs(state_alpha_beta_bryson(k, :)) < settling_threshold))
+                settlingTime_bryson = t_bryson(k);
+                break;
+            end
+        end
+
+        % Plot the new response
+        figure('Name', 'System Response - Bryson Method (6 States)', 'Color', 'w');
+        plot(t_bryson, y_bryson, 'LineWidth', 1.5);     
+
+        % Force the axes to show the grid explicitly
+        set(gca, 'XColor', 'k', 'YColor', 'k', ...
+            'XGrid', 'on', 'YGrid', 'on', ...
+            'XMinorGrid', 'on', 'YMinorGrid', 'on', ...
+            'GridAlpha', 0.15, 'MinorGridAlpha', 0.15, ...
+            'Layer', 'top'); 
+
+        title(['Bryson Method w/ Integrator (Settling Time: ', num2str(settlingTime_bryson, '%.2f'), 's)'], ...
+            'FontSize', 14, 'FontWeight', 'bold');
+        xlabel('Time (s)', 'FontWeight', 'bold');
+        ylabel('Outputs', 'FontWeight', 'bold');
+        legend('\alpha', '\beta', 'Location', 'best');

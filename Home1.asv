@@ -1,0 +1,473 @@
+clearvars; close all;
+format short
+load("IP_MODEL.mat");
+
+%% MACRO VALUES
+
+    x0 = [0.1 0 0.05 0 0]';
+
+%% Calculate the EighenValues of Matrix A
+D = [0 0];
+    e = eig(A);
+    e = sort(e);
+    fprintf('Eigenvalues of A: %.4f, %.4f, %.4f, %.4f, %.4f\n', e);
+    
+    if any(e < 0) && any(e > 0)
+    fprintf(': O sistema possui valores próprios com sinais opostos (Instabilidade).\n');
+    else
+    fprintf(': O sistema não possui valores próprios com sinais opostos.\n');
+    end
+    if any(abs(e) < 1e-10) % Usamos uma tolerância pequena para o zero
+    fprintf(': Existe um modo integrador (polo em zero) presente.\n');
+    end
+    %Existem 3 valores próprios negativos, 1 zero e outro positivo. Isto é
+    %indicativo de que o sistema é instável. O valor dos vpps revelam a
+    %frequência natural de oscilações do sistema, e são exatamente os polos do sistema. O valor positivo revela
+    %não convergência do sistema e o zero é um modo integrador que mantém o
+    %sistema constante. Esta frequeência de oscilações é intrínseca ao
+    %sistema e não depende nem da base nem do observador. Como não há
+    %valores imaginários ele não é oscilatório e tem comportamento
+    %exponencial apenas.
+
+%% Calculate the Controllability Matrix
+    n = size(A, 1);
+    C_0 = ctrb(A, B);
+    Controlability_rank = rank(C_0);
+    if any(Controlability_rank < n) 
+    fprintf('\nO Sistema não é controlável através de feedback\n');
+    else 
+    fprintf('\nO Sistema é controlável através de feedback e tem dimensão %d.\n', Controlability_rank);
+    end
+
+%% Calculate the Observability Matrix
+    n = size(A, 1);
+    C_1 = [0,0,1,0,0];
+    Observ_matrix_1 = obsv(A, C_1);
+    Observ_matrix_rank = rank(Observ_matrix_1);
+    if any(Observ_matrix_rank < n) 
+    fprintf('\nO Sistema não é observável medindo apenas betha.\n');
+    else 
+    fprintf('\nO Sistema é observável medindo betha. Tem característica de %d.\n', Observ_matrix_rank);
+    end
+
+    C_2 = [1,0,0,0,0;  0,0,1,0,0];
+    Observ_matrix_2 = obsv(A, C_2);
+    Observ_matrix_rank = rank(Observ_matrix_2);
+    if any(Observ_matrix_rank < n) 
+    fprintf('O Sistema não é observável medindo alpha e beta\n\n');
+    else 
+    fprintf('O Sistema é observável medindo alpha e beta. Tem característica de %d.\n\n', Observ_matrix_rank);
+    end
+
+%% Bode diagram of the open-loop system
+    system_state = ss(A, B, C, D);
+    [num, den] = ss2tf(A, B, C, D);
+    w = logspace(-2, 4, 500);
+    
+    figure('Name', 'Bode Diagram of O.L.');
+    bode(system_state, w);
+    grid on;
+    title('Bode Diagram of the Open-Loop System');
+    % Add comments on the diagram results
+
+%% Calculate Optimal Gain Vector K
+
+   % Create Multiple Test Options [Qr, Rr]
+    q1_vals = [1 2.5 5];
+    q1_p_vals = [0 0.1];
+    q3_vals = [10 12.5 15];
+    q3_p_vals = [0 0.1];
+    r_vals  = [0.1 0.5 1];
+    
+    [Q1g, Q1pg, Q3g, Q3pg, Rg] = ndgrid(q1_vals,q1_p_vals, q3_vals,q3_p_vals, r_vals);
+
+    comb = [Q1g(:) Q1pg(:) Q3g(:) Q3pg(:) Rg(:)];
+
+    % Method does not use simulink for faster compilation
+    for i = 1:size(comb,1)
+    
+        q1 = comb(i,1);
+        q1p = comb(i,2);
+        q3 = comb(i,3);
+        q3p = comb(i,4);
+        Rr = comb(i,5);
+    
+        Qr = eye(5);
+        Qr(1,1) = q1;
+        Qr(2,2) = q1p;
+        Qr(3,3) = q3;
+        Qr(4,4) = q3p;
+    
+        [K,S,~] = lqr(A,B,Qr,Rr);
+
+        resultados(i).Q1 = q1;
+        resultados(i).Q1p = q1p;
+        resultados(i).Q3 = q3;
+        resultados(i).Q3p = q3p;
+        resultados(i).R  = Rr;
+        resultados(i).K_norm = norm(K);
+        resultados(i).J = x0'*S*x0;
+    end
+
+    Q1 = [resultados.Q1]';
+    Q1p = [resultados.Q1p]';
+    Q3 = [resultados.Q3]';
+    Q3p = [resultados.Q3p]';
+    R  = [resultados.R]';
+    K_norm = [resultados.K_norm]';
+    J = [resultados.J]';
+    
+    % Make Iteration Table Results
+    Tr = table(Q1,Q1p,Q3,Q3p,R,K_norm,J);
+    Score = Tr.J .* Tr.K_norm;
+    Tr.Score = Score;
+    Tr_sorted = sortrows(Tr,"Score");
+
+    % Display Results ordered by a defined score: J * |K|
+    % fprintf('    Compute the Regulator Gain:\n');
+    % disp(T_sorted)
+
+    % Display Best Iteration
+    best_Tr = Tr_sorted(1,:);
+    fprintf('Best Q Matrix for Controller - Based on Lowest Score [ J * K]:\n');
+    fprintf('Q1 = %.2f | Q1p = %.2f | Q3 = %.2f | Q3p = %.2f | R = %.2f | K_norm = %.4f | J = %.4f\n', ...
+            best_Tr.Q1, best_Tr.Q1p, best_Tr.Q3, best_Tr.Q3p, best_Tr.R, best_Tr.K_norm, best_Tr.J);
+
+    %return;
+
+%% SIMULINK - Simulation of the controlled system
+
+    clear;
+    
+    load('IP_MODEL.mat'); % Load Matrices A, B, C, D 
+    Q_r = diag([10,0,20,0,0]); % Weight Matrix for x 
+    R_r = 0.1; % Weight for the input variable 
+    K_r = lqr(A, B, Q_r, R_r); % Calculate feedback gain 
+    
+
+    % Simulate controller 
+    x0 = [0.1 0 0 0 0]'; % Initial conditions 
+    T = 2; % Simulation time
+    C = eye(5);
+    D = [0 0 0 0 0]';
+
+    sim_1 = sim('my_macro2025b' , T); 
+    u = sim_1.u;
+    x = sim_1.x;
+    t = sim_1.t.time;
+
+    % Threshold for settling states 1 and 3      
+    %settling_threshold = 0.05; 
+    %state13 = x(:, [1, 3]);
+     %   
+    % Initialize settling time as the simulation time.
+    %settlingTime = T;  
+     %   
+    % Loop over simulation time to find when both states are within the threshold
+    %for k = 1:length(t)
+     %   if all(abs(state13(k, :)) < settling_threshold)
+      %      settlingTime = t(k);
+       %     break;
+        %end
+    %end
+     %   
+    % Maximum current magnitude from state 5
+   % maxCurrent = max(abs(x(:,5)));
+%
+    % Plot Response:
+    %figure('Name', 'System Response Analysis');
+        % Subplot 1: Display All states
+        %ax1 = subplot(2,1,1);
+        %plot(t, x, 'LineWidth', 1.5);     
+        %xlabel('Time (s)', 'FontSize', 11, 'FontWeight', 'bold');
+        %ylabel('States', 'FontSize', 11, 'FontWeight', 'bold');
+        %legend({'$\alpha$', '$\dot{\alpha}$', '$\beta$', '$\dot{\beta}$', 'i'},'Interpreter', 'latex', 'Location', 'northeastoutside');
+        %title(['Closed-loop Response (Settling Time: ', num2str(settlingTime, '%.2f'), 's)']);
+        %grid on;
+        %
+        % Subplot 2: Display Current
+        %ax2 = subplot(2,1,2);
+        %plot(t, x(:,5), 'LineWidth', 1.5);
+        % Display max current
+        %line(xlim, [maxCurrent maxCurrent], 'Color', 'k', 'LineStyle', ':', 'LineWidth', 1);
+        %xlabel('Time (s)', 'FontSize', 11, 'FontWeight', 'bold');
+        %ylabel('Current (A)', 'FontSize', 11, 'FontWeight', 'bold');
+        %title(['Current Response - Max Peak: ', num2str(maxCurrent, '%.2f'), ' A']);
+        %grid on;
+        
+        % Ajustar layout para não sobrepor títulos
+        %st = sgtitle('LQR Controller');
+        %set(st, 'FontSize', 14, 'FontWeight', 'bold');
+
+
+%% Compute the Estimator Gain
+
+    clear;
+    load('IP_MODEL.mat'); % Load matrices A,B,C,D
+    
+    G = eye(size(A)); % Process noise gain
+    x0 = [0.1 0 0.05 0 0]'; % Initial condition
+    Time = 2; % Simulation time
+
+    % Fixed controller
+    Q_ctrl = diag([10 0.1 15 0.1 1]);
+    R_ctrl = 0.5;
+    K_c = lqr(A,B,Q_ctrl,R_ctrl);    
+    
+    % Parameter grid to experiment values
+    q1_vals  = [1 5 10];    q1_p_vals = [0 0.1];
+    q3_vals  = [10 15 20];  q3_p_vals = [0 0.1];
+    r_vals   = [0.1 0.5 1];
+    
+    [Q1g,Q1pg,Q3g,Q3pg,Rg] = ndgrid(q1_vals,q1_p_vals,q3_vals,q3_p_vals,r_vals);
+    comb = [Q1g(:) Q1pg(:) Q3g(:) Q3pg(:) Rg(:)];
+    
+    
+    % Loop to Iterate Gains
+    for i = 1:size(comb,1)
+    
+        q1  = comb(i,1);
+        q1p = comb(i,2);
+        q3  = comb(i,3);
+        q3p = comb(i,4);
+        Rr  = comb(i,5);
+    
+        % Build Qe - Noise Covariance
+        Qe = eye(size(A));
+        Qe(1,1) = q1;
+        Qe(2,2) = q1p;
+        Qe(3,3) = q3;
+        Qe(4,4) = q3p;
+    
+        % Measurement noise (Kalman)
+        Re = eye(size(C,1))*Rr;
+    
+        try
+    
+            % Compute Gains
+            L_c = lqe(A,G,C,Qe,Re);
+    
+            % Controller matrices
+            A_c = A - B*K_c - L_c*C;
+            B_c = L_c;
+            C_c = -K_c;
+            D_c = zeros(size(K_c,1),size(C,1));
+    
+            % Send variables to Simulink workspace
+            assignin('base','A_c',A_c);
+            assignin('base','B_c',B_c);
+            assignin('base','C_c',C_c);
+            assignin('base','D_c',D_c);
+            assignin('base','x0',x0);
+    
+            % Simulate
+            out = sim('my_macro_2_2025b.slx',Time);
+            x = out.y.signals.values;
+            t = out.t.time;
+    
+            % Error metric
+            error_metric = trapz(t,sum(x(:,1:2).^2,2));
+    
+            % Save results
+            resultados(i).Q1  = q1;
+            resultados(i).Q1p = q1p;
+            resultados(i).Q3  = q3;
+            resultados(i).Q3p = q3p;
+            resultados(i).R   = Rr;
+    
+            resultados(i).L_norm = norm(L_c);
+            resultados(i).Error  = error_metric;
+    
+        catch 
+    
+            resultados(i).Q1  = q1;
+            resultados(i).Q1p = q1p;
+            resultados(i).Q3  = q3;
+            resultados(i).Q3p = q3p;
+            resultados(i).R   = Rr;
+            resultados(i).L_norm = NaN;
+            resultados(i).Error  = Inf;
+            %disp(ME.message);
+        end
+    end
+    
+    % Convert to table
+    Q1 = [resultados.Q1]';
+    Q1p = [resultados.Q1p]';
+    Q3 = [resultados.Q3]';
+    Q3p = [resultados.Q3p]';
+    R  = [resultados.R]';
+    L_norm = [resultados.L_norm]';
+    Error = [resultados.Error]';
+    T = table(Q1,Q1p,Q3,Q3p,R,L_norm,Error);
+
+    T.Score = T.Error .* T.L_norm;
+    T_sorted = sortrows(T,"Error");
+    best_Te = T_sorted(1,:);
+
+    % Print Table with Iteration Values
+    %fprintf('Estimator Gain Iterations:\n');
+    %disp(T_sorted)
+
+    
+    % Print Best Result Based on Lowest Error
+    fprintf('\nLowest Error Values of System:\n');
+    fprintf('Q1 = %.2f | Q1p = %.2f | Q3 = %.2f | Q3p = %.2f | R = %.2f | L_norm = %.4f | Error = %.4f\n', ...
+            best_Te.Q1, best_Te.Q1p, best_Te.Q3, best_Te.Q3p, best_Te.R, best_Te.L_norm, best_Te.Error);
+
+    out2 = sim('my_macro_2_2025b.slx',Time);
+    y = out2.y;
+    t2 = out2.tout;
+    
+    settling_threshold = 0.05; 
+    
+    state_alpha_beta = y(:, 1:2); 
+        
+    T = 30;
+    settlingTime2 = T;  
+        
+    % Loop para encontrar quando AMBOS os estados entram no limite
+    for k = 1:length(t2)
+        % É recomendado verificar se fica dentro do limite até ao fim
+        if all(all(abs(state_alpha_beta(k, :)) < settling_threshold))
+            settlingTime2 = t2(k);
+            break;
+        end
+    end
+        
+        % Plot Response 
+        figure('Name', 'System Response Analysis', 'Color', 'w');
+        plot(t2, y, 'LineWidth', 1.5);     
+        
+        set(gca, 'XColor', 'k', 'YColor', 'k', 'GridColor', [0.5 0.5 0.5]);
+        xlabel('Time (s)', 'Color', 'k', 'FontSize', 11, 'FontWeight', 'bold');
+        ylabel('Outputs (rad)', 'Color', 'k', 'FontSize', 11, 'FontWeight', 'bold');
+        
+        lgd = legend({'$\alpha$', '$\beta$'}, 'Interpreter', 'latex', 'Location', 'northeastoutside');
+        set(lgd, 'TextColor', 'k', 'Color', 'w', 'EdgeColor', 'k');
+        title(['Estimator Output Response (Settling Time: ', num2str(settlingTime2, '%.2f'), 's)'], ...
+              'FontSize', 14, 'FontWeight', 'bold');
+        grid on;
+        %% Bryson's method
+
+      
+        %maximum acceptable limits (Constraints)
+        alpha_max     = 90 * pi/180; % Max arm angle (rad) - from your IP_MACRO
+        beta_max      = 15 * pi/180; % Max pendulum angle (rad) - from your IP_MACRO
+        alpha_dot_max = 10;          % Max arm velocity (rad/s) - estimated limit
+        beta_dot_max  = 10;          % Max pendulum velocity (rad/s) - estimated limit
+        current_max = 5;           % Max accumulated integral error - estimated limit
+        int_alpha_max = 1;
+        v_max = 5;                   % Max motor voltage (V) - from your IP_MACRO
+
+        % 2. Calculate Q matrix weights (1 / max_value^2)
+        Q11 = 1 / (alpha_max^2);
+        Q22 = 1 / (alpha_dot_max^2);
+        Q33 = 1 / (beta_max^2);
+        Q44 = 1 / (beta_dot_max^2);
+        Q55 = 1 / (current_max^2);
+        Q66 = 1 / (int_alpha_max^2);
+        % Assemble the Q matrix
+        Qr = diag([Q11, Q22, Q33, Q44, Q55, Q66]);
+
+        % 3. Calculate R matrix weight (1 / max_voltage^2)
+        Rr = 1 / (v_max^2);
+
+        C_alpha = [1, 0, 0, 0, 0,]; 
+
+        % Create the new 6x6 Aa matrix
+        A_c = [A, zeros(5,1); 
+            C_alpha, 0]
+
+        % Create the new 6x1 Ba matrix
+        B_c = [B; 
+            0]
+
+        C_c = [K_c, 0]
+
+
+        D = [0];
+        % 4. Calculate the feedback gain
+        K = lqr(A_c, B_c, Qr, Rr);
+
+        % Display the matrices to check their values
+        disp('Q Matrix (Bryson):');
+        disp(Qr);
+        disp('R Matrix (Bryson):');
+        disp(Rr);
+
+
+        % SIMULATION WITH BRYSON'S METHOD
+       
+
+        % 1. Assemble the Qr matrix and Rr (if you haven't already)
+        Qr = diag([Q11, Q22, Q33, Q44, Q55, Q66]);
+        Rr = 1 / (v_max^2);
+
+        % 2. Recalculate the feedback gain K using the new Bryson matrices
+        % (This overwrites the old K in the workspace)
+        
+        K = lqr(A_c, B_c, Qr, Rr);
+
+        % Print the new K matrix to the command window to verify
+        disp('New Feedback Gain K (Bryson):');
+        disp(K);
+
+        % 3. Run the Simulink model again
+        % (It will automatically use the new 'K' we just calculated)
+        out_bryson = sim('my_macro_2_2025b.slx', Time);
+
+        % 4. Extract the data from the new simulation
+        y_bryson = out_bryson.y;
+        t_bryson = out_bryson.tout;
+
+        % 5. Calculate settling time for Bryson's method
+        settlingTime_bryson = Time;  
+        state_alpha_beta_bryson = y_bryson(:, 1:2); 
+        for k = 1:length(t_bryson)
+            if all(all(abs(state_alpha_beta_bryson(k, :)) < settling_threshold))
+                settlingTime_bryson = t_bryson(k);
+                break;
+            end
+        end
+
+        % 6. Plot the new response
+   
+        figure('Name', 'System Response - Bryson Method', 'Color', 'w');
+        plot(t_bryson, y_bryson, 'LineWidth', 1.5);     
+
+        % Force the axes to show the grid explicitly
+        set(gca, 'XColor', 'k', 'YColor', 'k', ...
+            'XGrid', 'on', 'YGrid', 'on', ...
+            'XMinorGrid', 'on', 'YMinorGrid', 'on', ...
+            'GridAlpha', 0.15, 'MinorGridAlpha', 0.15, ...
+            'Layer', 'top'); % This forces the grid to be drawn on top!
+
+        title(['Bryson Method Response (Settling Time: ', num2str(settlingTime_bryson, '%.2f'), 's)'], ...
+            'FontSize', 14, 'FontWeight', 'bold');
+        xlabel('Time (s)', 'FontWeight', 'bold');
+        ylabel('States', 'FontWeight', 'bold');
+
+        % Adjust the legend based on how many variables you are outputting
+        legend('\alpha', '\beta',  'Location', 'best');
+
+
+        % ==========================================================
+        % OBSERVER (KALMAN FILTER) TUNING
+        % ==========================================================
+        % G matrix maps the process noise to the states. 
+        G = eye(size(A)); 
+
+        % Tuning Scalars
+        q_noise = 10;   % Model uncertainty factor
+        r_noise = 1;    % Sensor noise factor
+
+        % Covariance Matrices
+        Qe = eye(size(A)) * q_noise; 
+        Re = eye(2) * r_noise;       % eye(2) because we only measure 2 things (alpha, beta)
+
+        % Calculate estimator gains
+        L = lqe(A, G, C, Qe, Re); 
+
+        disp('Estimator Gain L:');
+        disp(L);
