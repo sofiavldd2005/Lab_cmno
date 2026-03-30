@@ -51,7 +51,7 @@ end
 
 % --- Observability ---
 C_1 = [0,0,1,0,0];
-Observ_matrix_rank_1 = rank(obsv(A, C_1));
+Observ_matrix_rank_1 = rank(obsv(A, C_1))
 if any(Observ_matrix_rank_1 < n) 
     fprintf('O Sistema não é observável medindo apenas beta.\n');
 else 
@@ -70,12 +70,21 @@ end
 system_state = ss(A, B, C, D);
 w = logspace(-2, 4, 500);
 
-figure('Name', 'Bode Diagram of O.L.', 'Color', 'w');
-bode(system_state, w);
-grid on;
-title('Bode Diagram of the Open-Loop System');
-% TODO: Add comments on the diagram results here!
+% Find out how many outputs the system has based on the C matrix
+num_outputs = size(system_state, 1);
 
+% Loop through each output and plot it in a separate window
+for i = 1:num_outputs
+    figure('Name', sprintf('Bode Diagram of O.L. - Output %d', i), 'Color', 'w');
+
+    % Plot only the transfer function from Input 1 to Output i
+    bode(system_state(i, 1), w);
+    grid on;
+
+    title(sprintf('Bode Diagram of the Open-Loop System: Output %d', i));
+
+    % TODO: Add comments on the diagram results here!
+end
 
 %% ========================================================================
 %  PART 2: CONTROLLER DESIGN (LQR)
@@ -130,6 +139,7 @@ assignin('base','D_c',D_c);
 %  PART 4: SIMULATION & RESULTS
 %  ========================================================================
 
+
 disp('--- Running Final Simulink Simulation ---');
 % Simulates using the K and L matrices currently in the workspace
 out_final = sim('my_macro_2_2025.slx', Time);
@@ -138,7 +148,7 @@ y_final = out_final.y;
 t_final = out_final.tout;
 
 % Calculate Settling Time
-settling_threshold = 0.05; 
+settling_threshold = 0.01; 
 settlingTime_final = Time;  
 state_alpha_beta = y_final(:, 1:2); 
 
@@ -184,15 +194,15 @@ legend('\alpha', '\beta', 'Location', 'best');
         Q66 = 1 / (int_alpha_max^2);
         
         Qr = diag([Q11, Q22, Q33, Q44, Q55, Q66]);
-        Rr = 1 / (v_max^2);
+        Rr = 0.04;
 
         % 3. Create the Augmented PLANT Matrices for LQR (Named Aa, Ba)
         C_alpha = [1, 0, 0, 0, 0]; 
         Aa = [A, zeros(5,1); 
-              C_alpha, 0];
+              C_alpha, 0]
         Ba = [B; 
-              0];
-
+              0]
+     
         % 4. Calculate the Augmented Feedback Gain K_aug
         K_aug = lqr(Aa, Ba, Qr, Rr);
         
@@ -284,3 +294,8 @@ legend('\alpha', '\beta', 'Location', 'best');
         xlabel('Time (s)', 'FontWeight', 'bold');
         ylabel('Outputs', 'FontWeight', 'bold');
         legend('\alpha', '\beta', 'Location', 'best');
+
+
+
+
+        
